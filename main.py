@@ -1,6 +1,7 @@
 import pygame
 import neat
 import random
+import os
 
 
 class Display():
@@ -56,15 +57,15 @@ class Bird():
 
     def check_collision(self):
         global pipes
-        bird_mask = pygame.mask.from_surface(bird.images[(bird.tick // 6) % len(bird.images)])
+        bird_mask = pygame.mask.from_surface(self.images[(self.tick // 6) % len(self.images)])
 
         # Check Pipes
         for pipe in pipes:
             bottom_mask = pygame.mask.from_surface(pipe.image_bottom)
             top_mask = pygame.mask.from_surface(pipe.image_top)
 
-            bottom_offset = (pipe.x - bird.x, pipe.y_bottom - bird.y)
-            top_offset = (pipe.x - bird.x, pipe.y_top - bird.y)
+            bottom_offset = (pipe.x - self.x, pipe.y_bottom - self.y)
+            top_offset = (pipe.x - self.x, pipe.y_top - self.y)
 
             bottom_collision = bird_mask.overlap(bottom_mask, bottom_offset)
             top_collisoon = bird_mask.overlap(top_mask, top_offset)
@@ -73,7 +74,7 @@ class Bird():
                 return True
 
         # Check Boundaries
-        if bird.y < -74 or bird.y > 536:
+        if self.y < -74 or self.y > 536:
             return True
 
         return False
@@ -97,7 +98,6 @@ class Pipe():
         self.height = self.image_bottom.get_height()
 
         self.has_spawned = False
-        self.has_passed = False
 
     def move(self):
         self.x -= 2
@@ -170,7 +170,7 @@ def main_menu():
         scene_return = False
         buttons = []
         buttons.append(Button(44, 100, "button.png", "Play", play, True, (0, 0, 0), (255, 255, 255)))
-        buttons.append(Button(44, 148, "button.png", "Neat", neat, True, (0, 0, 0), (255, 255, 255)))
+        buttons.append(Button(44, 148, "button.png", "Neat", neatf, False, (0, 0, 0), (255, 255, 255)))
         buttons.append(Button(44, 196, "button.png", "Exit", exit, True, (0, 0, 0), (255, 255, 255)))
 
     for event in pygame.event.get():
@@ -216,6 +216,8 @@ def play():
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_RETURN:
                 bird.jump()
+            if event.key == pygame.K_SPACE:
+                bird.jump()
             if event.key == pygame.K_ESCAPE:
                 scenes.pop()
                 scene_enter = False
@@ -236,10 +238,9 @@ def play():
         if pipe.x + pipe.width < 0:
             pipes.pop(0)
 
-        if bird.x >= pipe.x+pipe.width//2 and not pipe.has_passed:
+        if bird.x >= pipe.x-1 and bird.x <= pipe.x+1:
             score = score + 1
             print(score)
-            pipe.has_passed = True
 
     # Collision
     if bird.check_collision():
@@ -251,26 +252,100 @@ def play():
         pipe.draw()
     display.update()
 
-def neat():
-    global display, running, scenes, scene_enter, scene_return, bird
+def eval_genomes(genomes, config):
+    global pipes, birds
 
-    if scene_enter or scene_return:
-        scene_enter = False
-        scene_return = False
+    nets = []
+    ge = []
+    birds = []
 
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_RETURN:
-                pass
-            if event.key == pygame.K_ESCAPE:
-                scenes.pop()
-                scene_enter = False
-                scene_return = True
+    # Setting up neural network for genome
+    for _, g in genomes:
+        net = neat.nn.FeedForwardNetwork.create(g, config)
+        nets.append(net)
+        birds.append(Bird(96, 244))
+        g.fitness = 0
+        ge.append(g)
 
-    display.screen.fill((192, 192, 192))
-    display.update()
+    pipes = [Pipe(288)]
+    target_pipe = 0
+    score = 0
+    run = True
+    while run:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                quit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    quit()
+
+        if len(birds) == 0:
+            run = False
+            break
+
+        # Pipes
+        for pipe in pipes:
+            pipe.move()
+            if pipe.x + pipe.width + 150 <= display.width and not pipe.has_spawned:
+                pipes.append(Pipe(288))
+                pipe.has_spawned = True
+
+            if pipe.x + pipe.width < 0:
+                pipes.pop(0)
+                target_pipe -= 1
+
+            if 96 >= pipe.x + 52 - 1 and 96 <= pipe.x + 52 + 1:
+                target_pipe += 1
+
+        # Birds
+        for i, bird in enumerate(birds):
+            bird.move()
+
+            # Fitness Score
+            for pipe in pipes:
+                if bird.x >= pipe.x - 1 and bird.x <= pipe.x + 1:
+                    ge[i].fitness += 5
+
+            ge[i].fitness += 0.05
+
+            output = nets[i].activate((bird.y, abs(bird.y - pipes[target_pipe].y_top + pipes[target_pipe].height),
+                                       abs(bird.y - pipes[target_pipe].y_bottom)))
+            if output[0] > 0.5:
+                bird.jump()
+
+            # Collision
+            if bird.check_collision():
+                ge[i].fitness -= 1
+                birds.pop(i)
+                nets.pop(i)
+                ge.pop(i)
+
+        # Draw
+        display.screen.fill((192, 192, 192))
+        image = pygame.image.load("background-day.png")
+        display.screen.blit(image, (0, 0))
+        for bird in birds:
+            bird.draw()
+        for pipe in pipes:
+            pipe.draw()
+        display.update()
+
+
+def neatf():
+    # config file
+    local_dir = os.path.dirname(__file__)
+    config_path = os.path.join(local_dir, 'config-feedforward.txt')
+    config = neat.config.Config(neat.DefaultGenome, neat.DefaultReproduction,
+                                neat.DefaultSpeciesSet, neat.DefaultStagnation,
+                                config_path)
+    # population
+    p = neat.Population(config)
+    # output
+    p.add_reporter(neat.StdOutReporter(True))
+    stats = neat.StatisticsReporter()
+    p.add_reporter(stats)
+
+    winner = p.run(eval_genomes,25)
 
 
 display = Display()
